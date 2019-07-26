@@ -10,6 +10,6 @@ The differences with the upstream repo are:
 
 This was made for a custom LineageOS rom for particular device (for Xiaomi Redmi Note 4 / mido) with droidVNC app preinstalled, so I didn't need to support other Android devices. It may work, or not work, for your case.
 
-If you need droidVNC port/customization for your device, or any custom Android ROM / firmware - feel you free to contact me at gmixaz at gmail com. My profile at upwork: https://www.upwork.com/o/profiles/users/_~015014cada179b4e70/
+If you need droidVNC port/customization for your device, or any custom Android ROM / firmware - feel you free to contact me at gmixaz at gmail com. My profile at upwork: https://www.upwork.com/freelancers/~0125150854c123ed75
 
 ## for other (previous) README info see the upstream repos
