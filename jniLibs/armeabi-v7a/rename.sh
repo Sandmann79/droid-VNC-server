@@ -1,1 +1,0 @@
-cp androidvncserver libandroidvncserver.so

@@ -5,6 +5,8 @@ android {
 
     externalNativeBuild {
         ndkBuild {
+            // need application.mk, because some vars here and this working ???
+            path project.getRootDir().toString()+"/jni/Application.mk"
             path project.getRootDir().toString()+"/jni/Android.mk"
         }
     }
@@ -29,6 +31,8 @@ android {
         sourceSets {
             main {
 //                jniLibs.srcDirs 'src/main/jniLibs' //, 'src/main/nativeMethods/libs'
+                jniLibs.srcDirs = ["../nativeMethods/libs"]
+
                 java.srcDirs project.getRootDir().toString()+"/src"
                 res.srcDirs project.getRootDir().toString()+"/res"
                 manifest.srcFile project.getRootDir().toString()+'/AndroidManifest.xml'
