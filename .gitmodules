@@ -1,9 +1,9 @@
 [submodule "jni/libpng"]
 	path = jni/libpng
-	url = https://android.googlesource.com/platform/external/libpng
+	url = github.com:AMV007/libpng.git
 [submodule "jni/boringssl"]
 	path = jni/boringssl
-	url = https://android.googlesource.com/platform/external/boringssl
+	url = github.com:AMV007/boringssl.git
 [submodule "jni/libjpeg-turbo"]
 	path = jni/libjpeg-turbo
-	url = https://android.googlesource.com/platform/external/libjpeg-turbo
+	url = github.com:AMV007/libjpeg-turbo.git
