@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/subtle"
@@ -18,8 +19,6 @@ import (
 	"math/big"
 	"net"
 	"time"
-
-	"boringssl.googlesource.com/boringssl/ssl/test/runner/ed25519"
 )
 
 type clientHandshakeState struct {
@@ -125,11 +124,10 @@ func (c *Conn) clientHandshake() error {
 		srtpProtectionProfiles:  c.config.SRTPProtectionProfiles,
 		srtpMasterKeyIdentifier: c.config.Bugs.SRTPMasterKeyIdentifer,
 		customExtension:         c.config.Bugs.CustomExtension,
-		pskBinderFirst:          c.config.Bugs.PSKBinderFirst,
+		pskBinderFirst:          c.config.Bugs.PSKBinderFirst && !c.config.Bugs.OnlyCorruptSecondPSKBinder,
 		omitExtensions:          c.config.Bugs.OmitExtensions,
 		emptyExtensions:         c.config.Bugs.EmptyExtensions,
 		delegatedCredentials:    !c.config.Bugs.DisableDelegatedCredentials,
-		pqExperimentSignal:      c.config.PQExperimentSignal,
 	}
 
 	if maxVersion >= VersionTLS13 {
@@ -443,15 +441,18 @@ NextCipherSuite:
 			helloBytes = hello.marshal()
 		}
 
+		var appendToHello byte
 		if c.config.Bugs.PartialClientFinishedWithClientHello {
-			// Include one byte of Finished. We can compute it
-			// without completing the handshake. This assumes we
-			// negotiate TLS 1.3 with no HelloRetryRequest or
-			// CertificateRequest.
-			toWrite := make([]byte, 0, len(helloBytes)+1)
-			toWrite = append(toWrite, helloBytes...)
-			toWrite = append(toWrite, typeFinished)
-			c.writeRecord(recordTypeHandshake, toWrite)
+			appendToHello = typeFinished
+		} else if c.config.Bugs.PartialEndOfEarlyDataWithClientHello {
+			appendToHello = typeEndOfEarlyData
+		} else if c.config.Bugs.PartialSecondClientHelloAfterFirst {
+			appendToHello = typeClientHello
+		} else if c.config.Bugs.PartialClientKeyExchangeWithClientHello {
+			appendToHello = typeClientKeyExchange
+		}
+		if appendToHello != 0 {
+			c.writeRecord(recordTypeHandshake, append(helloBytes[:len(helloBytes):len(helloBytes)], appendToHello))
 		} else {
 			c.writeRecord(recordTypeHandshake, helloBytes)
 		}
@@ -603,20 +604,37 @@ NextCipherSuite:
 		}
 
 		hello.hasEarlyData = c.config.Bugs.SendEarlyDataOnSecondClientHello
+		// The first ClientHello may have skipped this due to OnlyCorruptSecondPSKBinder.
+		hello.pskBinderFirst = c.config.Bugs.PSKBinderFirst
+		if c.config.Bugs.OmitPSKsOnSecondClientHello {
+			hello.pskIdentities = nil
+			hello.pskBinders = nil
+		}
 		hello.raw = nil
 
 		if len(hello.pskIdentities) > 0 {
 			generatePSKBinders(c.wireVersion, hello, pskCipherSuite, session.masterSecret, helloBytes, helloRetryRequest.marshal(), c.config)
 		}
 		secondHelloBytes = hello.marshal()
+		secondHelloBytesToWrite := secondHelloBytes
+
+		if c.config.Bugs.PartialSecondClientHelloAfterFirst {
+			// The first byte has already been sent.
+			secondHelloBytesToWrite = secondHelloBytesToWrite[1:]
+		}
 
 		if c.config.Bugs.InterleaveEarlyData {
 			c.sendFakeEarlyData(4)
-			c.writeRecord(recordTypeHandshake, secondHelloBytes[:16])
+			c.writeRecord(recordTypeHandshake, secondHelloBytesToWrite[:16])
 			c.sendFakeEarlyData(4)
-			c.writeRecord(recordTypeHandshake, secondHelloBytes[16:])
+			c.writeRecord(recordTypeHandshake, secondHelloBytesToWrite[16:])
+		} else if c.config.Bugs.PartialClientFinishedWithSecondClientHello {
+			toWrite := make([]byte, len(secondHelloBytesToWrite)+1)
+			copy(toWrite, secondHelloBytesToWrite)
+			toWrite[len(secondHelloBytesToWrite)] = typeFinished
+			c.writeRecord(recordTypeHandshake, toWrite)
 		} else {
-			c.writeRecord(recordTypeHandshake, secondHelloBytes)
+			c.writeRecord(recordTypeHandshake, secondHelloBytesToWrite)
 		}
 		c.flushHandshake()
 
@@ -901,10 +919,6 @@ func (hs *clientHandshakeState) doTLS13Handshake() error {
 				return errors.New("tls: expected no certificate_authorities extension")
 			}
 
-			if err := checkRSAPSSSupport(c.config.Bugs.ExpectRSAPSSSupport, certReq.signatureAlgorithms, certReq.signatureAlgorithmsCert); err != nil {
-				return err
-			}
-
 			if c.config.Bugs.IgnorePeerSignatureAlgorithmPreferences {
 				certReq.signatureAlgorithms = c.config.signSignatureAlgorithms()
 			}
@@ -1077,7 +1091,12 @@ func (hs *clientHandshakeState) doTLS13Handshake() error {
 		}
 		endOfEarlyData := new(endOfEarlyDataMsg)
 		endOfEarlyData.nonEmpty = c.config.Bugs.NonEmptyEndOfEarlyData
-		c.writeRecord(recordTypeHandshake, endOfEarlyData.marshal())
+		if c.config.Bugs.PartialEndOfEarlyDataWithClientHello {
+			// The first byte has already been sent.
+			c.writeRecord(recordTypeHandshake, endOfEarlyData.marshal()[1:])
+		} else {
+			c.writeRecord(recordTypeHandshake, endOfEarlyData.marshal())
+		}
 		hs.writeClientHash(endOfEarlyData.marshal())
 	}
 
@@ -1258,9 +1277,6 @@ func (hs *clientHandshakeState) doFullHandshake() error {
 	certReq, ok := msg.(*certificateRequestMsg)
 	if ok {
 		certRequested = true
-		if err := checkRSAPSSSupport(c.config.Bugs.ExpectRSAPSSSupport, certReq.signatureAlgorithms, certReq.signatureAlgorithmsCert); err != nil {
-			return err
-		}
 		if c.config.Bugs.IgnorePeerSignatureAlgorithmPreferences {
 			certReq.signatureAlgorithms = c.config.signSignatureAlgorithms()
 		}
@@ -1315,7 +1331,12 @@ func (hs *clientHandshakeState) doFullHandshake() error {
 		if c.config.Bugs.EarlyChangeCipherSpec < 2 {
 			hs.writeClientHash(ckx.marshal())
 		}
-		c.writeRecord(recordTypeHandshake, ckx.marshal())
+		if c.config.Bugs.PartialClientKeyExchangeWithClientHello {
+			// The first byte was already written.
+			c.writeRecord(recordTypeHandshake, ckx.marshal()[1:])
+		} else {
+			c.writeRecord(recordTypeHandshake, ckx.marshal())
+		}
 	}
 
 	if hs.serverHello.extensions.extendedMasterSecret && c.vers >= VersionTLS10 {
@@ -1454,7 +1475,7 @@ func (hs *clientHandshakeState) verifyCertificates(certMsg *certificateMsg) erro
 		}
 	}
 
-	leafPublicKey := getCertificatePublicKey(certs[0])
+	leafPublicKey := certs[0].PublicKey
 	switch leafPublicKey.(type) {
 	case *rsa.PublicKey, *ecdsa.PublicKey, ed25519.PublicKey:
 		break
@@ -1667,10 +1688,6 @@ func (hs *clientHandshakeState) processServerExtensions(serverExtensions *server
 		c.quicTransportParams = serverExtensions.quicTransportParams
 	}
 
-	if c.config.Bugs.ExpectPQExperimentSignal != serverExtensions.pqExperimentSignal {
-		return fmt.Errorf("tls: PQ experiment signal presence (%t) was not what was expected", serverExtensions.pqExperimentSignal)
-	}
-
 	return nil
 }
 
@@ -1850,7 +1867,12 @@ func (hs *clientHandshakeState) sendFinished(out []byte, isResume bool) error {
 	c.clientVerify = append(c.clientVerify[:0], finished.verifyData...)
 	hs.finishedBytes = finished.marshal()
 	hs.writeHash(hs.finishedBytes, seqno)
-	postCCSMsgs = append(postCCSMsgs, hs.finishedBytes)
+	if c.config.Bugs.PartialClientFinishedWithClientHello {
+		// The first byte has already been written.
+		postCCSMsgs = append(postCCSMsgs, hs.finishedBytes[1:])
+	} else {
+		postCCSMsgs = append(postCCSMsgs, hs.finishedBytes)
+	}
 
 	if c.config.Bugs.FragmentAcrossChangeCipherSpec {
 		c.writeRecord(recordTypeHandshake, postCCSMsgs[0][:5])
@@ -1997,18 +2019,24 @@ func writeIntPadded(b []byte, x *big.Int) {
 }
 
 func generatePSKBinders(version uint16, hello *clientHelloMsg, pskCipherSuite *cipherSuite, psk, firstClientHello, helloRetryRequest []byte, config *Config) {
-	if config.Bugs.SendNoPSKBinder {
-		return
-	}
-
+	maybeCorruptBinder := !config.Bugs.OnlyCorruptSecondPSKBinder || len(firstClientHello) > 0
 	binderLen := pskCipherSuite.hash().Size()
-	if config.Bugs.SendShortPSKBinder {
-		binderLen--
-	}
-
 	numBinders := 1
-	if config.Bugs.SendExtraPSKBinder {
-		numBinders++
+	if maybeCorruptBinder {
+		if config.Bugs.SendNoPSKBinder {
+			// The binders may have been set from the previous
+			// ClientHello.
+			hello.pskBinders = nil
+			return
+		}
+
+		if config.Bugs.SendShortPSKBinder {
+			binderLen--
+		}
+
+		if config.Bugs.SendExtraPSKBinder {
+			numBinders++
+		}
 	}
 
 	// Fill hello.pskBinders with appropriate length arrays of zeros so the
@@ -2023,11 +2051,13 @@ func generatePSKBinders(version uint16, hello *clientHelloMsg, pskCipherSuite *c
 	binderSize := len(hello.pskBinders)*(binderLen+1) + 2
 	truncatedHello := helloBytes[:len(helloBytes)-binderSize]
 	binder := computePSKBinder(psk, version, resumptionPSKBinderLabel, pskCipherSuite, firstClientHello, helloRetryRequest, truncatedHello)
-	if config.Bugs.SendShortPSKBinder {
-		binder = binder[:binderLen]
-	}
-	if config.Bugs.SendInvalidPSKBinder {
-		binder[0] ^= 1
+	if maybeCorruptBinder {
+		if config.Bugs.SendShortPSKBinder {
+			binder = binder[:binderLen]
+		}
+		if config.Bugs.SendInvalidPSKBinder {
+			binder[0] ^= 1
+		}
 	}
 
 	for i := range hello.pskBinders {

@@ -70,12 +70,95 @@ cc_defaults {
     },
 
     local_include_dirs: ["src/crypto"],
+}
 
-    arch: {
-        arm64: {
-            clang_asflags: ["-march=armv8-a+crypto"],
+cc_object {
+    name: "bcm_object",
+    device_supported: true,
+    recovery_available: true,
+    native_bridge_supported: true,
+    defaults: [
+        "libcrypto_bcm_sources",
+        "libcrypto_defaults",
+        "boringssl_defaults",
+        "boringssl_flags",
+    ],
+    sanitize: {
+        address: false,
+        hwaddress: false,
+        fuzzer: false,
+    },
+    target: {
+        not_windows: {
+            header_libs: ["libc_headers"], // TODO(b/153662223): Clean this up.
+        },
+        android: {
+            header_libs: ["libc_headers"], // TODO(b/153662223): Clean this up.
+            cflags: [
+                "-DBORINGSSL_FIPS",
+                "-fPIC",
+                // -fno[data|text]-sections required to ensure a
+                // single text and data section for FIPS integrity check
+                "-fno-data-sections",
+                "-fno-function-sections",
+            ],
+            linker_script: "src/crypto/fipsmodule/fips_shared.lds",
+        },
+        // Temporary hack to let BoringSSL build with a new compiler.
+        // This doesn't enable HWASAN unconditionally, it just causes
+        // BoringSSL's asm code to unconditionally use a HWASAN-compatible
+        // global variable reference so that the non-HWASANified (because of
+        // sanitize: { hwaddress: false } above) code in the BCM can
+        // successfully link against the HWASANified code in the rest of
+        // BoringSSL in HWASAN builds.
+        android_arm64: {
+            asflags: [
+                "-fsanitize=hwaddress",
+            ],
         },
     },
+    apex_available: [
+        "//apex_available:platform",
+        "com.android.adbd",
+        "com.android.art.debug",
+        "com.android.art.release",
+        "com.android.art.testing",
+        "com.android.bluetooth.updatable",
+        "com.android.conscrypt",
+        "com.android.media",
+        "com.android.resolv",
+    ],
+    min_sdk_version: "29",
+}
+
+bootstrap_go_package {
+    name: "bssl_ar",
+    pkgPath: "boringssl.googlesource.com/boringssl/util/ar",
+    srcs: [
+        "src/util/ar/ar.go",
+    ],
+    testSrcs: [
+        "src/util/ar/ar_test.go",
+    ],
+}
+
+bootstrap_go_package {
+    name: "bssl_fipscommon",
+    pkgPath: "boringssl.googlesource.com/boringssl/util/fipstools/fipscommon",
+    srcs: [
+        "src/util/fipstools/fipscommon/const.go",
+    ],
+}
+
+blueprint_go_binary {
+    name: "bssl_inject_hash",
+    srcs: [
+        "src/util/fipstools/inject_hash/inject_hash.go",
+    ],
+    deps: [
+        "bssl_ar",
+        "bssl_fipscommon",
+    ],
 }
 
 // Target and host library
@@ -90,21 +173,85 @@ cc_library {
     double_loadable: true,
     recovery_available: true,
     defaults: [
-        "libcrypto_bcm_sources",
         "libcrypto_sources",
         "libcrypto_defaults",
         "boringssl_defaults",
         "boringssl_flags",
     ],
     unique_host_soname: true,
+    srcs: [
+        ":bcm_object",
+    ],
+    target: {
+        android: {
+            cflags: [
+                "-DBORINGSSL_FIPS",
+            ],
+            sanitize: {
+                // Disable address sanitizing otherwise libcrypto will not report
+                // itself as being in FIPS mode, which causes boringssl_self_test
+                // to fail.
+                address: false,
+            },
+            inject_bssl_hash: true,
+            static: {
+                // Disable the static version of libcrypto, as it causes
+                // problems for FIPS certification.  Use libcrypto_static for
+                // modules that need static libcrypto but do not need FIPS self
+                // testing, or use dynamic libcrypto.
+                enabled: false,
+            },
+        },
+    },
+    apex_available: [
+        "//apex_available:platform",
+        "com.android.adbd",
+        "com.android.art.debug",
+        "com.android.art.release",
+        "com.android.art.testing",
+        "com.android.bluetooth.updatable",
+        "com.android.conscrypt",
+        "com.android.media",
+        "com.android.resolv",
+    ],
+    min_sdk_version: "29",
 }
 
 // Static library
-// This should only be used for host modules that will be in a JVM, all other
-// modules should use the static variant of libcrypto.
+// This version of libcrypto will not have FIPS self tests enabled, so its
+// usage is protected through visibility to ensure it doesn't end up used
+// somewhere that needs the FIPS version.
 cc_library_static {
     name: "libcrypto_static",
-    visibility: ["//visibility:public"],
+    visibility: [
+        "//art/build/sdk",
+        "//bootable/recovery/updater",
+        "//external/conscrypt",
+        "//external/python/cpython2",
+        // Strictly, only the *static* toybox for legacy devices should have
+        // access to libcrypto_static, but we can't express that.
+        "//external/toybox",
+        "//frameworks/ml/nn:__subpackages__",
+        "//hardware/interfaces/confirmationui/1.0/vts/functional",
+        "//hardware/interfaces/drm/1.0/vts/functional",
+        "//hardware/interfaces/drm/1.2/vts/functional",
+        "//hardware/interfaces/keymaster/3.0/vts/functional",
+        "//hardware/interfaces/keymaster/4.0/vts/functional",
+        "//hardware/interfaces/keymaster/4.1/vts/functional",
+        "//packages/modules/DnsResolver/tests:__subpackages__",
+        "//system/core/adb",
+        "//system/core/init",
+        "//system/core/fs_mgr/liblp",
+        "//system/core/fs_mgr/liblp/vts_core",
+        "//system/core/fs_mgr/libsnapshot",
+        "//system/libvintf/test",
+        "//system/security/keystore/tests",
+        "//test/vts-testcase/security/avb",
+    ],
+    apex_available: [
+        "//apex_available:platform",
+        "com.android.neuralnetworks",
+    ],
     defaults: [
         "libcrypto_bcm_sources",
         "libcrypto_sources",
@@ -112,19 +259,6 @@ cc_library_static {
         "boringssl_defaults",
         "boringssl_flags",
     ],
-
-    target: {
-        host: {
-            // TODO: b/26160319. ASAN breaks use of this library in JVM.
-            // Re-enable sanitization when the issue with making clients of this library
-            // preload ASAN runtime is resolved. Without that, clients are getting runtime
-            // errors due to unresolved ASAN symbols, such as
-            // __asan_option_detect_stack_use_after_return.
-            sanitize: {
-                never: true,
-            },
-        },
-    },
 }
 
 //// libssl
@@ -147,9 +281,22 @@ cc_library {
         "boringssl_defaults",
         "boringssl_flags",
     ],
+    target: {
+        windows: {
+            enabled: true,
+        },
+    },
     unique_host_soname: true,
 
     shared_libs: ["libcrypto"],
+
+    apex_available: [
+        "//apex_available:platform",
+        "com.android.adbd",
+        "com.android.conscrypt",
+        "com.android.resolv",
+    ],
+    min_sdk_version: "29",
 }
 
 // Tool
@@ -168,6 +315,14 @@ cc_binary {
     target: {
         darwin: {
             enabled: false,
+        },
+        android: {
+            compile_multilib: "both",
+        },
+    },
+    multilib: {
+        lib32: {
+            suffix: "32",
         },
     },
 }
@@ -196,6 +351,16 @@ cc_binary {
         "src/util/fipstools/cavp/cavp_test_util.cc",
         "src/util/fipstools/cavp/cavp_tlskdf_test.cc",
     ],
+    target: {
+        android: {
+            compile_multilib: "both",
+        },
+    },
+    multilib: {
+        lib32: {
+            suffix: "32",
+        },
+    },
 
     shared_libs: [
         "libcrypto",
@@ -249,5 +414,20 @@ cc_test {
     shared_libs: [
         "libcrypto",
         "libssl",
+    ],
+}
+
+// Utility binary for CMVP on-site testing.
+cc_binary {
+    name: "test_fips",
+    host_supported: false,
+    defaults: [
+        "boringssl_flags",
+    ],
+    shared_libs: [
+        "libcrypto",
+    ],
+    srcs: [
+        "src/util/fipstools/cavp/test_fips.c",
     ],
 }
