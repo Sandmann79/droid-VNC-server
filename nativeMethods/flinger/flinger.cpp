@@ -22,26 +22,47 @@
 #include "flinger.h"
 #include "screenFormat.h"
 
-#include <binder/IPCThreadState.h>
-#include <binder/ProcessState.h>
-#include <binder/IServiceManager.h>
+#include <errno.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <string.h>
 
-#include <binder/IMemory.h>
-#include <gui/ISurfaceComposer.h>
+#include <linux/fb.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+
+#include <binder/ProcessState.h>
+
 #include <gui/SurfaceComposerClient.h>
+#include <gui/ISurfaceComposer.h>
+
+#include <ui/DisplayInfo.h>
+#include <ui/GraphicTypes.h>
+#include <ui/PixelFormat.h>
+
+#include <system/graphics.h>
+
+// TODO: Fix Skia.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic pop
+
+#define COLORSPACE_UNKNOWN    0
+#define COLORSPACE_SRGB       1
+#define COLORSPACE_DISPLAY_P3 2
 
 using namespace android;
 
-static sp<IBinder> display;
-
+size_t Bpp = 32;
 static const int COMPONENT_YUV = 0xFF;
-static size_t Bpp = 32;
-
-static ScreenshotClient *screenshotClient=NULL;
-
-/* Additional buffer when screen buffer is bigger than screen size. */
-/* NULL if the sizes are equival, so the flinger frame buffer is used.  */
+static screenFormat format;
+static sp<IBinder> display;
 static void *new_base = NULL;
+uint32_t captureOrientation;
+sp<GraphicBuffer> outBuffer;
 
 struct PixelFormatInformation {
     enum {
@@ -181,12 +202,20 @@ status_t getPixelFormatInformation(PixelFormat format, PixelFormatInformation* i
     return NO_ERROR;
 }
 
-static screenFormat format;
+int screen_cap()
+{
+    status_t result = ScreenshotClient::capture(display, Rect(), 0, 0, INT32_MIN, INT32_MAX, false, captureOrientation, &outBuffer);
+    if (result != NO_ERROR) {
+        close_flinger();
+        exit(-1);
+    }
+    return 0;
+}
 
 extern "C" screenFormat getscreenformat_flinger()
 {
     //get format on PixelFormat struct
-    PixelFormat f=screenshotClient->getFormat();
+    PixelFormat f=outBuffer->getPixelFormat();
 
     PixelFormatInformation pf;
     getPixelFormatInformation(f,&pf);
@@ -195,8 +224,8 @@ extern "C" screenFormat getscreenformat_flinger()
     L("Bpp set to %d\n", Bpp);
 
     format.bitsPerPixel = bitsPerPixel(f);
-    format.width        = screenshotClient->getWidth();
-    format.height       = screenshotClient->getHeight();
+    format.width        = outBuffer->getWidth();
+    format.height       = outBuffer->getHeight();
     format.size         = format.bitsPerPixel*format.width*format.height/CHAR_BIT;
     format.redShift     = pf.l_red;
     format.redMax       = pf.h_red - pf.l_red;
@@ -214,18 +243,43 @@ extern "C" screenFormat getscreenformat_flinger()
 extern "C" int init_flinger()
 {
     uint32_t width, height, stride;
-    int errcode;
-    
-    display = SurfaceComposerClient::getBuiltInDisplay(ISurfaceComposer::eDisplayIdMain);
-    
-    L("--Initializing JellyBean access method--\n");
+    static const uint32_t ORIENTATION_MAP[] = {
+        ISurfaceComposer::eRotateNone, // 0 == DISPLAY_ORIENTATION_0
+        ISurfaceComposer::eRotate270, // 1 == DISPLAY_ORIENTATION_90
+        ISurfaceComposer::eRotate180, // 2 == DISPLAY_ORIENTATION_180
+        ISurfaceComposer::eRotate90, // 3 == DISPLAY_ORIENTATION_270
+    };
 
-    screenshotClient = new ScreenshotClient();
-    L("ScreenFormat: %d\n", screenshotClient->getFormat());
+    L("--Initializing Pie access method--\n");
 
-    width = screenshotClient->getWidth();
-    height = screenshotClient->getHeight();
-    stride = screenshotClient->getStride();
+    ProcessState::self()->setThreadPoolMaxThreadCount(0);
+    ProcessState::self()->startThreadPool();
+
+    int32_t displayId = ISurfaceComposer::eDisplayIdMain;
+    display = SurfaceComposerClient::getBuiltInDisplay(displayId);
+    if (display == NULL) {
+        L("Unable to get handle for display %d\n", displayId);
+        close_flinger();
+        return -1;
+    }
+
+    Vector<DisplayInfo> configs;
+    SurfaceComposerClient::getDisplayConfigs(display, &configs);
+    int activeConfig = SurfaceComposerClient::getActiveConfig(display);
+    if (static_cast<size_t>(activeConfig) >= configs.size()) {
+        L("Active config %d not inside configs (size %zu)\n", activeConfig, configs.size());
+        close_flinger();
+        return -1;
+    }
+    uint8_t displayOrientation = configs[activeConfig].orientation;
+    captureOrientation = ORIENTATION_MAP[displayOrientation];
+
+    screen_cap();
+    L("ScreenFormat: %d\n", outBuffer->getPixelFormat());
+
+    width = outBuffer->getWidth();
+    height = outBuffer->getHeight();
+    stride = outBuffer->getStride();
 
     // allocate additional frame buffer if the source one is not continuous
     if (stride > width) {
@@ -236,45 +290,36 @@ extern "C" int init_flinger()
         }
     }
 
-    errcode = screenshotClient->update(display, Rect(), false);
-    L("Screenshot client updated its display on init.\n");
-
-    if (display != NULL && errcode == NO_ERROR)
-        return 0;
-
-    // error
-    close_flinger();
-    return -1;
+    return 0;
 }
 
 extern "C" unsigned int *checkfb_flinger()
 {
-    screenshotClient->update(display, Rect(), false);
-    void const* base = screenshotClient->getPixels();
+    void* base = 0;
+    screen_cap();
+    outBuffer->lock(GraphicBuffer::USAGE_SW_READ_OFTEN, &base);
     return (unsigned int*)base;
 }
 
 extern "C" unsigned int *readfb_flinger()
 {
-    screenshotClient->update(display, Rect(), false);
-    void const* base = 0;
-    uint32_t w, h, s;
+    void* base = 0;
+    uint32_t width, height, stride;
+    screen_cap();
+    outBuffer->lock(GraphicBuffer::USAGE_SW_READ_OFTEN, &base);
 
-    base = screenshotClient->getPixels();
-    w = screenshotClient->getWidth();
-    h = screenshotClient->getHeight();
-    s = screenshotClient->getStride();
+    width = outBuffer->getWidth();
+    height = outBuffer->getHeight();
+    stride = outBuffer->getStride();
 
-    // If stride is greater than width, then the image is non-contiguous in memory
-    // so we have copy it into a new array such that it is
-    if (s > w) {
+    if (stride > width) {
         void *tmp_ptr = new_base;
 
-        for (size_t y = 0; y < h; y++) {
-            memcpy(tmp_ptr, base, w * Bpp);
+        for (size_t y = 0; y < height; y++) {
+            memcpy(tmp_ptr, base, width * Bpp);
             // Pointer arithmetic on void pointers is frowned upon, apparently.
-            tmp_ptr = (void *)((char *)tmp_ptr + w * Bpp);
-            base = (void *)((char *)base + s * Bpp);
+            tmp_ptr = (void *)((char *)tmp_ptr + width * Bpp);
+            base = (void *)((char *)base + stride * Bpp);
         }
         return (unsigned int *)new_base;
     }
@@ -284,12 +329,12 @@ extern "C" unsigned int *readfb_flinger()
 extern "C" void close_flinger()
 {
     display = NULL;
-    if(screenshotClient != NULL) {
-        delete screenshotClient;
-        screenshotClient = NULL;
+    captureOrientation = 0;
+
+    if(outBuffer != 0) {
+        outBuffer.clear();
     }
     if(new_base != NULL) {
         free(new_base);
-        new_base = NULL;
     }
 }
