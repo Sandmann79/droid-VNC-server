@@ -55,6 +55,7 @@ LOCAL_SRC_FILES += \
 									 screenMethods/framebuffer.c \
 									 screenMethods/gralloc.c \
 									 screenMethods/flinger.c \
+									 screenMethods/apilevel.c \
 									 suinput/suinput.c 
 
 LOCAL_C_INCLUDES += \
