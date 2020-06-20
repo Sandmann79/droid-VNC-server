@@ -18,13 +18,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 */
 
 #include <dlfcn.h>
-
-#ifdef NO_LIB_PATH
-#include <libgen.h>
-#endif
-
 #include "flinger.h"
 #include "common.h"
+#include "apilevel.h"
 
 void *flinger_lib = NULL;
 
@@ -35,77 +31,65 @@ getscreenformat_fn_type getscreenformat_flinger = NULL;
 
 int initFlinger(void)
 {
-    int i,len;
-    char lib_name[64];
+	L("--Loading flinger native lib--\n");
+	int i;
+	char lib_name[64];
+	int idx = get_most_preferrable_level();
 
-#ifdef NO_LIB_PATH
-    ssize_t count = readlink("/proc/self/exe", lib_name, PATH_MAX);
-    const char *path;
-    if (count != -1) {
-        path = dirname(lib_name);
+    for (i=idx; i>0; i--) {
+        sprintf(lib_name, DVNC_LIB_PATH "libdvnc_flinger_sdk%d.so",compiled_sdks[i]);
+
+        if (flinger_lib != NULL)
+          dlclose(flinger_lib);
+        L("Loading lib: %s\n",lib_name);
+        flinger_lib = dlopen(lib_name, RTLD_NOW);
+        if (flinger_lib == NULL){
+          L("Couldnt load flinger library %s! Error string: %s\n",lib_name,dlerror());
+          continue; 
+        }
+    
+        init_fn_type init_flinger = dlsym(flinger_lib,"init_flinger");
+        if(init_flinger == NULL) {
+          L("Couldn't load init_flinger! Error string: %s\n",dlerror());
+          continue;
+        }
+  
+        close_flinger = dlsym(flinger_lib,"close_flinger");
+        if(close_flinger == NULL) {
+          L("Couldn't load close_flinger! Error string: %s\n",dlerror());
+          continue;
+        }
+    
+        readfb_flinger = dlsym(flinger_lib,"readfb_flinger");
+        if(readfb_flinger == NULL) {
+          L("Couldn't load readfb_flinger! Error string: %s\n",dlerror());
+          continue;
+        }
+
+        getscreenformat_flinger = dlsym(flinger_lib,"getscreenformat_flinger");
+        if(getscreenformat_flinger == NULL) {
+          L("Couldn't load get_screenformat! Error string: %s\n",dlerror());
+          continue;
+        }
+        int ret = init_flinger();
+        if (ret == -1) {
+           L("flinger method not supported by this device!\n");
+           continue;
+        }
+
+        screenformat = getScreenFormatFlinger();
+        if ( screenformat.width <= 0 ) {
+          L("Error: I have received a bad screen size from flinger.\n");
+          continue;;
+        }
+
+        if ( readBufferFlinger() == NULL) {
+           L("Error: Could not read surfaceflinger buffer!\n");
+           continue;
+        }
+     return 0;
     }
-    sprintf(lib_name, "%s/libdvnc_flinger_sdk.so",path);
-#else
-    sprintf(lib_name, DVNC_LIB_PATH "/libdvnc_flinger_sdk.so");
-#endif
-
-    L("--Loading flinger native lib %s--\n",lib_name);
-
-    // 1. Open lib
-    flinger_lib = dlopen(lib_name, RTLD_NOW);
-    if (flinger_lib == NULL) {
-        L("Couldnt load flinger library %s! Error string: %s\n", lib_name, dlerror());
-        return -1;
-    }
-
-    // 2. Bind functions
-    init_fn_type init_flinger = dlsym(flinger_lib,"init_flinger");
-    if (init_flinger == NULL) {
-        L("Couldn't load init_flinger! Error string: %s\n", dlerror());
-        return -1;
-    }
-
-    close_flinger = dlsym(flinger_lib,"close_flinger");
-    if (close_flinger == NULL) {
-        L("Couldn't load close_flinger! Error string: %s\n", dlerror());
-        return -1;
-    }
-
-    readfb_flinger = dlsym(flinger_lib,"readfb_flinger");
-    if (readfb_flinger == NULL) {
-        L("Couldn't load readfb_flinger! Error string: %s\n", dlerror());
-        return -1;
-    }
-
-    checkfb_flinger = dlsym(flinger_lib,"checkfb_flinger");
-    if (checkfb_flinger == NULL) {
-        L("Couldn't load checkfb_flinger! Error string: %s\n", dlerror());
-        return -1;
-    }
-
-    getscreenformat_flinger = dlsym(flinger_lib,"getscreenformat_flinger");
-    if (getscreenformat_flinger == NULL) {
-        L("Couldn't load get_screenformat! Error string: %s\n", dlerror());
-        return -1;
-    }
-
-    int ret = init_flinger();
-    if (ret == -1) {
-         L("flinger method not supported by this device!\n");
-         return -1;
-    }
-
-    screenformat = getScreenFormatFlinger();
-    if (screenformat.width <= 0) {
-        L("Error: I have received a bad screen size from flinger.\n");
-        return -1;
-    }
-
-    if (checkBufferFlinger() == NULL) {
-        L("Error: Could not read surfaceflinger buffer!\n");
-        return -1;
-    }
-    return 0;
+  return -1;
 }
 
 screenFormat getScreenFormatFlinger(void)
