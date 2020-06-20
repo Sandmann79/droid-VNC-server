@@ -1,7 +1,7 @@
 LOCAL_PATH:= $(call my-dir)
 include $(CLEAR_VARS)
 
-LIBVNCSERVER_ROOT:=./LibVNCServer-0.9.12
+LIBVNCSERVER_ROOT:=./LibVNCServer-0.9.13
 
 LIBVNCSERVER_SRC_FILES:= \
 	$(LIBVNCSERVER_ROOT)/libvncserver/main.c \
@@ -32,11 +32,10 @@ LIBVNCSERVER_SRC_FILES:= \
 	$(LIBVNCSERVER_ROOT)/common/vncauth.c \
 	$(LIBVNCSERVER_ROOT)/common/minilzo.c \
 	$(LIBVNCSERVER_ROOT)/common/zywrletemplate.c \
-	$(LIBVNCSERVER_ROOT)/common/turbojpeg.c
-
-#	$(LIBVNCSERVER_ROOT)/libvncserver/rfbssl_openssl.c \
-#	$(LIBVNCSERVER_ROOT)/libvncserver/rfbcrypto_openssl.c 
-#	$(LIBVNCSERVER_ROOT)/libvncserver/websockets.c \
+	$(LIBVNCSERVER_ROOT)/common/crypto_openssl.c \
+	$(LIBVNCSERVER_ROOT)/common/turbojpeg.c \
+	$(LIBVNCSERVER_ROOT)/libvncserver/rfbssl_openssl.c \
+	$(LIBVNCSERVER_ROOT)/libvncserver/websockets.c
 
 LOCAL_CFLAGS  +=  -Wall \
 									-O3 \
@@ -44,8 +43,6 @@ LOCAL_CFLAGS  +=  -Wall \
 									-DLIBVNCSERVER_HAVE_ZLIB \
 									-DLIBVNCSERVER_HAVE_LIBJPEG
 
-# do not use app package folders
-LOCAL_CFLAGS  +=  -DNOAPP -DNO_LIB_PATH
 
 LOCAL_LDLIBS +=  -llog -lz -ldl 
 
@@ -67,8 +64,7 @@ LOCAL_C_INCLUDES += \
 										$(LOCAL_PATH)/suinput \
 										$(LOCAL_PATH)/../libpng \
 										$(LOCAL_PATH)/../jpeg \
-										$(LOCAL_PATH)/../jpeg-turbo \
-										$(LOCAL_PATH)/../openssl/include \
+										$(LOCAL_PATH)/../boringssl/src/include \
 										$(LOCAL_PATH)/$(LIBVNCSERVER_ROOT)/libvncserver \
 										$(LOCAL_PATH)/$(LIBVNCSERVER_ROOT)/common \
 										$(LOCAL_PATH)/$(LIBVNCSERVER_ROOT)/rfb \
