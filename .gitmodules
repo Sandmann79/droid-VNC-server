@@ -1,9 +1,0 @@
-[submodule "jni/libpng"]
-	path = jni/libpng
-	url = github.com:AMV007/libpng.git
-[submodule "jni/boringssl"]
-	path = jni/boringssl
-	url = github.com:AMV007/boringssl.git
-[submodule "jni/libjpeg-turbo"]
-	path = jni/libjpeg-turbo
-	url = github.com:AMV007/libjpeg-turbo.git
