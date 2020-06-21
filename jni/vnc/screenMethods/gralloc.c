@@ -93,6 +93,7 @@ int initGralloc(void)
 screenFormat getScreenFormatGralloc(void)
 {
   screenFormat f;
+  f.width = 0;
   if (getscreenformat_gralloc)
      f = getscreenformat_gralloc();
   return f;

@@ -95,6 +95,7 @@ int initFlinger(void)
 screenFormat getScreenFormatFlinger(void)
 {
     screenFormat f;
+    f.width = 0;
     if (getscreenformat_flinger)
          f = getscreenformat_flinger();
     return f;

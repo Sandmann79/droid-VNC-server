@@ -28,6 +28,7 @@
 
 #include "libvncserver/scale.h"
 #include "rfb/rfb.h"
+#include "rfb/rfbregion.h"
 #include "rfb/keysym.h"
 #include "suinput.h"
 
@@ -102,7 +103,6 @@ rfbNewClientHookPtr clientHook(rfbClientPtr cl) {
 				vncscr->height * scaling / 100.0);
 		L("Scaling to w=%d	h=%d\n", (int) (vncscr->width * scaling / 100.0),
 				(int) (vncscr->height * scaling / 100.0));
-		//rfbSendNewScaleSize(cl);
 	}
 
 	cl->clientGoneHook = (ClientGoneHookPtr) clientGone;
@@ -181,11 +181,10 @@ void initVncServer(int argc, char **argv) {
 		vncscr->passwordCheck = rfbCheckPasswordByList;
 	}
 
-#ifdef LIBVNCSERVER_WITH_WEBSOCKETS
 	vncscr->httpDir = "webclients/";
 //	vncscr->httpEnableProxyConnect = TRUE;
 	vncscr->sslcertfile = "self.pem";
-#endif
+
 	vncscr->serverFormat.redShift = screenformat.redShift;
 	vncscr->serverFormat.greenShift = screenformat.greenShift;
 	vncscr->serverFormat.blueShift = screenformat.blueShift;
@@ -358,11 +357,11 @@ void printUsage(char **argv) {
 			"\nandroidvncserver [parameters]\n"
 					"-f <device>\t- Framebuffer device (only with -m fb, default is /dev/graphics/fb0)\n"
 					"-h\t\t- Print this help\n"
-					"-m <method>\t- Display grabber method\n"
-					"\t\tfb: framebuffer\n"
-					"\t\tgralloc: for devices with Nvidia Tegra2 GPU\n"
-					"\t\tflinger: gingerbread+ devices\n"
-					"\t\tadb: slower, but should be compatible with all devices\n"
+					"-m <method>\t- Display grabber method:\n"
+					"\t\t\tfb - framebuffer\n"
+					"\t\t\tgralloc - for devices with Nvidia Tegra2 GPU\n"
+					"\t\t\tflinger - gingerbread+ devices\n"
+					"\t\t\tadb - slower, but should be compatible with all devices\n"
 					"-p <password>\t- Password to access server\n"
 					"-e <path to encrypted password file>\t- path to encrypted password file to access server\n"
 					"-r <rotation>\t- Screen rotation (degrees) (0,90,180,270)\n"
@@ -510,11 +509,8 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	rfbClientPtr repeater = NULL;
-
 	while (1) {
 		usec = (vncscr->deferUpdateTime + standby) * 1000;
-		clock_t start = clock();
 		rfbProcessEvents(vncscr, usec);
 
 		if (idle)

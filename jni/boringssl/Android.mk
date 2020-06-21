@@ -10,7 +10,9 @@ boringssl_cflags := \
     -DBORINGSSL_IMPLEMENTATION \
     -DOPENSSL_SMALL \
     -D_XOPEN_SOURCE=700 \
-    -Wno-unused-parameter
+    -Wno-unused-parameter \
+    -Wno-implicit-function-declaration \
+    -Wno-int-conversion
 
 boringssl_cppflags := \
     -Wall \
